@@ -1,9 +1,25 @@
+import os
+from pathlib import Path
+
+# Playwright normally resolves browser binaries relative to its driver
+# folder. Inside a PyInstaller --onefile executable, that folder is a fresh,
+# random temp extraction directory (_MEI...) created on every launch — so
+# anything installed there vanishes the moment that process exits, and a
+# separate process (like our --install-browsers re-exec) gets its own,
+# different _MEI folder entirely. Pinning PLAYWRIGHT_BROWSERS_PATH to a
+# stable folder outside any temp extraction fixes this: install once, and
+# every future launch (GUI or install subprocess) looks in the same place.
+_BROWSERS_DIR = Path.home() / ".manga_downloader" / "browsers"
+_BROWSERS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_BROWSERS_DIR))
+
 import asyncio
 import logging
 import queue
+import subprocess
+import sys
 import threading
 import webbrowser
-from pathlib import Path
 
 import customtkinter as ctk
 from PIL import Image
@@ -17,25 +33,40 @@ ctk.set_appearance_mode("dark")
 # Project info shown in the header. Adjust these to match your repo/site.
 # ---------------------------------------------------------------------------
 
-GITHUB_URL = "https://github.com/jdelta22/download_berserker"  # TODO: point to the actual repo
+GITHUB_URL = "https://github.com/jdelta22/SEU_REPOSITORIO"  # TODO: point to the actual repo
 ORIGINAL_SITE_URL = "https://readberserk.com"
-LOGO_PATH = Path("assets/logo.png")  # drop the chosen image here (any size, it gets resized)
 
-# ---------------------------------------------------------------------------
-# Thread-safe logging: background threads put log records into a queue,
-# the GUI drains that queue on the main thread and writes into the textbox.
-# ---------------------------------------------------------------------------
+
+def resource_path(relative_path: str) -> Path:
+    """
+    Resolve the absolute path to a bundled resource (e.g. an image under assets/).
+
+    Works both when running app.py directly (dev) and when running inside a
+    PyInstaller --onefile executable, where bundled data (via --add-data)
+    lives in a temporary extraction folder exposed as sys._MEIPASS, not in
+    the current working directory.
+    """
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return base_path / relative_path
+
+
+LOGO_PATH = resource_path("assets/logo.png")  # drop the chosen image here (any size, it gets resized)
+
 
 def is_chromium_installed() -> bool:
     """Check whether Playwright's Chromium build is already downloaded on this machine."""
     try:
         from playwright.sync_api import sync_playwright
- 
+
         with sync_playwright() as p:
             return Path(p.chromium.executable_path).exists()
     except Exception:
         return False
- 
+
+# ---------------------------------------------------------------------------
+# Thread-safe logging: background threads put log records into a queue,
+# the GUI drains that queue on the main thread and writes into the textbox.
+# ---------------------------------------------------------------------------
 
 log_queue: "queue.Queue" = queue.Queue()
 
@@ -54,6 +85,7 @@ def setup_logging():
 
 
 class HeaderFrame(ctk.CTkFrame):
+    """Static header shown above the main frame: title, objective, source and links."""
 
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -65,13 +97,13 @@ class HeaderFrame(ctk.CTkFrame):
             self.logo_label.pack(pady=(10, 5))
 
         self.title_label = ctk.CTkLabel(
-            self, text="Berserk's Manga Downloader", font=ctk.CTkFont(size=20, weight="bold")
+            self, text="Manga Downloader", font=ctk.CTkFont(size=20, weight="bold")
         )
         self.title_label.pack(pady=(5, 2))
 
         self.objective_label = ctk.CTkLabel(
             self,
-            text="Downloads Berserk chapters as images and converts them into a single PDF per chapter.",
+            text="Downloads manga chapters as images and converts them into a single PDF per chapter.",
             wraplength=440,
             justify="center",
         )
@@ -85,15 +117,6 @@ class HeaderFrame(ctk.CTkFrame):
             text_color="gray70",
         )
         self.source_label.pack(pady=(2, 8))
-        self.source_label = ctk.CTkLabel(
-            self,
-            text=f"If you want, you can download all chapters by cloning the github repository: {GITHUB_URL}",
-            wraplength=440,
-            justify="center",
-            text_color="gray70",
-        )
-        self.source_label.pack(pady=(2, 8))
-
 
         links_frame = ctk.CTkFrame(self, fg_color="transparent")
         links_frame.pack(pady=(0, 5))
@@ -136,6 +159,15 @@ class MyFrame(ctk.CTkFrame):
         self.convert_button = ctk.CTkButton(buttons_frame, text="Convert to PDF", command=self.start_convert)
         self.convert_button.grid(row=0, column=1, padx=5)
 
+        self.install_button = ctk.CTkButton(
+            buttons_frame, text="Install Chromium", command=self.start_install_browsers,
+            fg_color="#8B5A2B", hover_color="#6E4722",
+        )
+        self.install_button.grid(row=0, column=2, padx=5)
+
+        self.chromium_status_label = ctk.CTkLabel(self, text="Checking Chromium installation...", text_color="gray70")
+        self.chromium_status_label.pack(pady=(0, 5))
+
         self.progress_bar = ctk.CTkProgressBar(self, width=350)
         self.progress_bar.set(0)
         self.progress_bar.pack(pady=10)
@@ -149,7 +181,42 @@ class MyFrame(ctk.CTkFrame):
         # Poll the queue for log/progress/done messages coming from background threads.
         self.after(100, self.poll_queue)
 
+        # Check Chromium status without blocking the GUI on startup.
+        threading.Thread(target=self.check_chromium_status, daemon=True).start()
+
     # -- actions -----------------------------------------------------------
+
+    def check_chromium_status(self):
+        installed = is_chromium_installed()
+        log_queue.put(("chromium_status", installed))
+
+    def start_install_browsers(self):
+        self.set_buttons_enabled(False)
+        self.append_log("Installing Chromium... this can take a few minutes on first run.")
+        self.chromium_status_label.configure(text="Installing Chromium...")
+
+        def worker():
+            try:
+                # Re-invoke this same executable with a marker flag instead of
+                # depending on a system Python (which may not exist on the
+                # client machine). See the "--install-browsers" handling below.
+                process = subprocess.Popen(
+                    [sys.executable, "--install-browsers"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if line:
+                        log_queue.put(("log", line))
+                process.wait()
+                log_queue.put(("install_done", process.returncode == 0))
+            except Exception as e:
+                log_queue.put(("error", f"Failed to install Chromium: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def start_download(self):
         chapter = self.chapter_number.get().strip()
@@ -235,6 +302,28 @@ class MyFrame(ctk.CTkFrame):
                         self.append_log(f"Conversion failed: {result['error']}")
                         self.progress_label.configure(text="Conversion failed")
 
+                elif kind == "chromium_status":
+                    installed = item[1]
+                    if installed:
+                        self.chromium_status_label.configure(text="Chromium is installed.", text_color="gray70")
+                    else:
+                        self.chromium_status_label.configure(
+                            text="Chromium not found — click 'Install Chromium' before downloading.",
+                            text_color="orange",
+                        )
+
+                elif kind == "install_done":
+                    success = item[1]
+                    self.set_buttons_enabled(True)
+                    if success:
+                        self.append_log("Chromium installed successfully.")
+                        self.chromium_status_label.configure(text="Chromium is installed.", text_color="gray70")
+                    else:
+                        self.append_log("Chromium installation failed. Check the log above for details.")
+                        self.chromium_status_label.configure(
+                            text="Chromium installation failed.", text_color="red"
+                        )
+
                 elif kind == "error":
                     self.set_buttons_enabled(True)
                     self.append_log(item[1])
@@ -254,6 +343,7 @@ class MyFrame(ctk.CTkFrame):
         state = "normal" if enabled else "disabled"
         self.download_button.configure(state=state)
         self.convert_button.configure(state=state)
+        self.install_button.configure(state=state)
 
 
 class App(ctk.CTk):
@@ -272,7 +362,23 @@ class App(ctk.CTk):
         self.my_frame.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
 
 
+def run_browser_install():
+    """
+    Entry point used when this executable is re-invoked with --install-browsers.
+    Runs `playwright install chromium` and prints progress to stdout so the
+    parent GUI process (which launched us as a subprocess) can stream it live.
+    """
+    from playwright.__main__ import main as playwright_main
+
+    sys.argv = ["playwright", "install", "chromium"]
+    playwright_main()
+
+
 if __name__ == "__main__":
+    if "--install-browsers" in sys.argv:
+        run_browser_install()
+        sys.exit(0)
+
     setup_logging()
     app = App()
     app.mainloop()

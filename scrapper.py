@@ -4,13 +4,20 @@ Downloads chapter images from readberserk.com and saves them locally.
 Designed to be called from a GUI (e.g. CustomTkinter) via asyncio,
 typically inside a background thread with its own event loop.
 """
-import asyncio
+
 import base64
 import logging
+import os
 from pathlib import Path
 from typing import Callable, Optional
 
 from playwright.async_api import async_playwright
+
+# Defensive default: see the matching comment in app.py. Uses setdefault so
+# it never overrides a value already set by app.py or the user's own shell.
+_BROWSERS_DIR = Path.home() / ".manga_downloader" / "browsers"
+_BROWSERS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_BROWSERS_DIR))
 
 logger = logging.getLogger(__name__)
 
@@ -144,31 +151,3 @@ async def download_chapter(
         result["error"] = str(e)
 
     return result
-
-if __name__ == "__main__":
-    capitulos_prequels = ["a0", "b0", "c0", "d0", "e0", "f0", "g0", "h0", "i0", "j0", "k0", "l0", "m0", "n0", "o0", "p0"]
-    capitulos_extras = ["099-005", "364-5"]
-    quantidade_de_capitulos = 386
-    erros = []
-    print("Baixando capítulos numerados...")
-    for capitulo in range(1, quantidade_de_capitulos+1):
-        capitulo_formatted = f"{capitulo:03d}"
-        try:
-            print(f"Baixando capítulo {capitulo_formatted}...")
-            asyncio.run(download_manga_seguro(capitulo_formatted))
-        except Exception as e:
-            erros += [capitulo_formatted]
-            print(f"Erro ao baixar capítulo {capitulo_formatted}: {e}")
-    print("Capitulos numerados concluidos")
-
-    print("Baixando capítulos prequels e extras...")
-    for capitulo in capitulos_prequels + capitulos_extras:
-        try:
-            print(f"Baixando capítulo {capitulo}...")
-            asyncio.run(download_manga_seguro(capitulo))
-        except Exception as e:
-            erros += [capitulo]
-            print(f"Erro ao baixar capítulo {capitulo}: {e}")
-    print("Capítulos prequels e extras concluídos")
-    print("Download concluído")
-    print(f"Capítulos com erro: {erros}")
