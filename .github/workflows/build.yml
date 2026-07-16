@@ -1,0 +1,49 @@
+name: Build executables
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers (Linux)
+        if: runner.os == 'Linux'
+        run: playwright install chromium --with-deps
+
+      - name: Install Playwright browsers (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: playwright install chromium
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name "MangaDownloader" --collect-data customtkinter --collect-all playwright --add-data "assets;assets" app.py
+
+      - name: Build (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name "MangaDownloader" --collect-data customtkinter --collect-all playwright --add-data "assets:assets" app.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MangaDownloader-${{ matrix.os }}
+          path: dist/*

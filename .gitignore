@@ -12,5 +12,5 @@ wheels/
 # Caso existam outros formatos
 *.jpg
 *.jpeg
-*.png
 *.webp
+*.pdf

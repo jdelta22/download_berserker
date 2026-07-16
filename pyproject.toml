@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "customtkinter>=6.0.0",
     "img2pdf>=0.6.3",
     "logging>=0.4.9.6",
     "pillow>=12.3.0",
